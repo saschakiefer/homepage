@@ -76,6 +76,12 @@ I use Pandas for reading and parsing the data. This might be a bit oversized for
 
 Note: I got the ``POPULATION`` from the `Statistisches Bundesamt <https://www.destatis.de/DE/Themen/Gesellschaft-Umwelt/Bevoelkerung/Bevoelkerungsstand/Tabellen/zensus-geschlecht-staatsangehoerigkeit-2020.html>`_
 
+A word about the projected date: I first started with the median over all days in the dataset. The depressing result kept
+me thinking. Since I try to stay positive, I hope, that the vaccination speed increases. Over time, that for certain
+would relativize the projection date. On the other side, I thing (not being statistician), that it would not reflect
+a realistic result. Therefore, I decided, to only take the medion of the last seven days to calculate the speed to
+project the date. I hope, that this leads to a better result.
+
 Progress Bar
 ------------
 
@@ -290,3 +296,5 @@ like the number formatting - that cost time. On the other hand side, that is whe
 You can find the complete project on `Github <https://github.com/saschakiefer/vacci_bot>`_
 
 If you like, you can follow my little `vacci_bot` on `Twitter <https://twitter.com/GermanyProgress>`_. He would like that.
+
+**Update:** Added some words about how I calculate the projected date.
