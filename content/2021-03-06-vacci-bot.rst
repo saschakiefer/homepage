@@ -1,0 +1,292 @@
+Twitter Bot posting Daily Germany Vaccination Progress
+######################################################
+
+:date: 2021-03-06
+:modified: 2021-03-06
+:status: published
+:category: Programmieren, Python, Docker
+:slug: vacci-bot
+:authors: sascha
+:summary: How to create a bot that creates a daily vaccination progress bar and posts it to Twitter
+
+Idea
+====
+
+With all the Covid-19 vaccination fuzz, I wanted to get a feeling of *"how far is it away for me"*.
+But I don't want to check `Impfdashboard <https://impfdashboard.de/>`_ manually. I want to get the
+information provided to me. Since I'm on Twitter regularly, I figured, why not write a bot for that.
+
+I like the fun of `Progress Bar 20xx <https://twitter.com/ProgressBar202_>`_, so I decided to create something similar.
+What I had in mind was like this:
+
+.. image:: images/2021-03-06_progress_bar.png
+   :class: image-process-article-image
+   :align: center
+   :alt: Progress Bar
+
+I wanted the bot to be written in Python. And run somewhere independently from my local machine. I first was
+thinking about some cloud services. But since our Synology server idles 90% of the time anyway, I decided to
+put it in a docker container and run it there regularly.
+
+Realization
+===========
+
+Data Source
+-----------
+
+On `RKI's <https://www.rki.de/DE/Content/InfAZ/N/Neuartiges_Coronavirus/Daten/Impfquoten-Tab.html>`_ official page, I
+found a link to an Excel table and already expected the worst. I began investigating the table and was
+cursing, how one can provide such an automation unfriendly format. By pure chance, I clicked on the second
+link on the page, which leads to the `BMG: COVID-19-Impfdashboard <https://impfdashboard.de/>`_.
+I was quite surprised, that I found a link to a `TSV <https://impfdashboard.de/static/data/germany_vaccinations_timeseries_v2.tsv>`_
+file in the download area. Thank god I hadn't started with parsing the Excel document.
+
+**Lesson learned:** It's worth digging for data.
+
+I use Pandas for reading and parsing the data. This might be a bit oversized for the task, but it's quite convenient.
+
+.. code-block:: python
+
+    class VaccinationStats:
+        DATA_SOURCE = (
+            "https://impfdashboard.de/static/data/germany_vaccinations_timeseries_v2.tsv"
+        )
+
+        POPULATION = 83190556
+
+        def __init__(self):
+            df = pd.read_csv(VaccinationStats.DATA_SOURCE, sep="\t", header=0)
+
+            logger.info("Data loaded")
+
+            df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d")
+            self.date = pd.Timestamp(df.tail(1)["date"].values[0]).to_pydatetime()
+            logger.info(f"Current dataset date is {self.date}")
+
+            self.vacc_cumulated = df.tail(1)["dosen_kumulativ"].values[0]
+            self.vacc_both = df.tail(1)["personen_voll_kumulativ"].values[0]
+            self.vacc_first = df.tail(1)["personen_erst_kumulativ"].values[0]
+
+            self.vacc_quote = self.vacc_cumulated / VaccinationStats.POPULATION
+            self.vacc_median = df.tail(7)["dosen_differenz_zum_vortag"].mean()
+
+            self.days_to_go = int(
+                round(VaccinationStats.POPULATION * 0.7 / self.vacc_median)
+            )
+
+Note: I got the ``POPULATION`` from the `Statistisches Bundesamt <https://www.destatis.de/DE/Themen/Gesellschaft-Umwelt/Bevoelkerung/Bevoelkerungsstand/Tabellen/zensus-geschlecht-staatsangehoerigkeit-2020.html>`_
+
+Progress Bar
+------------
+
+This was quite interesting. Not so much from the technical challenge, but it showed, how we complicate things for ourselves sometimes 😂.
+
+I started evaluating different Python visualization libs and fiddled around with Matplotlib for example. Just
+to realize after some time that this all was way too complicated. So I started thinking: What if I simply draw
+it myself. How difficult can it be. It turned out, it's not complicated at all, thanks to `pillow <https://python-pillow.org/>`_.
+In the end, it's only 4 shapes and one text:
+
+.. code-block:: python
+
+    def create_image(self):
+        with Image.new("RGB", (1000, 500), color="#FEFFFE") as img:
+            draw = ImageDraw.Draw(img)
+
+            # Frame
+            draw.rectangle([(25, 175), (975, 325)], width=2, outline="#000000")
+
+            # Inner Bar
+            draw.rectangle([(50, 200), (950, 300)], width=0, fill="#000000")
+
+            # Draw 70%
+            x = 50 + int(round(900 * 0.7))
+            draw.line([(x, 200), (x, 300)], width=4, fill="green")
+
+            # Draw current
+            x = 50 + int(round(900 * self._stats.vacc_quote))
+            draw.rectangle([(50, 200), (x, 300)], width=0, fill="green")
+
+            # Days to go
+            fnt = ImageFont.truetype("bot/arial.ttf", 50)
+            draw.text(
+                (200, 220),
+                "Days to 70%: " + str(self._stats.days_to_go),
+                font=fnt,
+                fill="white",
+            )
+
+            img.save(TweetBot.IMAGE)
+
+**Lesson learned:** Simplicity wins (easier said than lived).
+
+Twitter Status Update
+---------------------
+
+In principle, this is straightforward as well. But the devil is in the details. The number formatting led to
+some gray hairs and the "when are new data available" logic was quite interesting as well.
+
+First of all, I had to set up a new Twitter account for my bot to post to: `GermanyVaccinationProgress <https://twitter.com/GermanyProgress>`_.
+I found it quite amusing that Twitter shortened the display name to ``@GermanyProgress``. This leaves room for other
+projects, as soon as the pandemic is over.
+
+Quite frankly, setting up the account and the profile, getting `developer access <https://developer.twitter.com>`_ and
+create the Twitter project was the most time-consuming part of this section. It's surprising how long one can search
+for a proper profile picture...
+
+I use `tweepy <https://www.tweepy.org/>`_. This library gives me all the access to the Twitter API I need. One first creates
+an ``API`` object to authenticate to Twitter:
+
+.. code-block:: python
+
+        consumer_key = os.getenv("CONSUMER_KEY")
+        consumer_secret = os.getenv("CONSUMER_SECRET")
+        access_token = os.getenv("ACCESS_TOKEN")
+        access_token_secret = os.getenv("ACCESS_TOKEN_SECRET")
+
+        auth = tweepy.OAuthHandler(consumer_key, consumer_secret)
+        auth.set_access_token(access_token, access_token_secret)
+        self._api = tweepy.API(
+            auth, wait_on_rate_limit=True, wait_on_rate_limit_notify=True
+        )
+        self._api.verify_credentials()
+
+Having the logon credentials read from environment variables becomes handy when running the docker container later on.
+
+Posting the status update is a two-folded process. First, you have to upload the image and then attach it to the post.
+But overall it's straight forward:
+
+.. code-block:: python
+
+    media = self._api.media_upload(IMAGE)
+    self._api.update_status(
+        status=status_text,
+        lat=52.53988938917128,
+        long=13.34704871422069,
+        media_ids=[media.media_id],
+    )
+
+**Formatting Numbers**
+
+To format numbers with groups separated by ``.``, I wanted to use the Python ``locale.format_string()`` function. It has
+a handy parameter ``grouping=True`` which formats numbers with groups. However, in my locale ``de_DE`` this would not
+work. No matter, what I did, no ``.`` appeared.
+
+``locale.localeconv()`` revealed, that in the locale ``de_DE`` the ``'thousands_sep'`` is set to ``''`` 🤦‍. Why would
+somebody do that? Fortunately, the separator is correctly set for monetary formatting. So, internally the numbers are
+monetary values now:
+
+.. code-block:: python
+
+    locale.format_string(
+        "%d", self._stats.vacc_cumulated, grouping=True, monetary=True
+    )
+
+
+**"When are new data available"-Logic**
+
+I wanted the bot, to only send a status update, as soon as a new dataset was available. Unfortunately, the only thing I
+know is: "The records are updated once a day". Quite un-determinable. Knowing the German authorities, one can narrow
+it down to "between 9:00 and 17:00", but that's it.
+
+In principle, this is easy, store, when the last post was created, and what the date of the dataset was locally in a file. Then one
+can check against that. However, I planned to run the bot in a docker container, so I didn't want to go through the
+effort to map an external volume to the container to persist data on. Inside the container wasn't an option either,
+because it would be gone as soon as I create a new one.
+
+But wait a minute. I already persist the data. In the Tweet. There is all I need. The post date, as well as the dataset
+date, which is, per dataset definition (thanks again to German authorities), always the day before - god forbid we would
+have real-time data. Since I don't post anything else on the channel, this logic would work. Also for days without
+new datasets (you know, we don't get data on weekends, either).
+
+.. code-block:: python
+
+    def is_new_data(self) -> bool:
+        last_tweet = self._api.user_timeline(count=1)
+
+        last_dataset_date = (last_tweet[0].created_at - timedelta(days=1)).replace(
+            hour=0, minute=0, second=0
+        )
+
+        if self._stats.date > last_dataset_date:
+            return True
+
+        return False
+
+Deploying the Bot to My Synology Using Docker
+---------------------------------------------
+
+Creating a docker image for such a small project is straight forward as well:
+
+* Create an image based on ``python:3.7-alpine``
+* Copy the project files over
+* Install dependencies
+* Define the command to run, when the image is used
+
+.. code-block:: docker
+
+    FROM python:3.7-alpine
+
+    COPY bot/* /bot/
+    COPY requirements.txt /tmp
+    RUN pip3 install --upgrade pip setuptools wheel
+    RUN pip3 install -r /tmp/requirements.txt
+
+    WORKDIR .
+    CMD ["python3", "./bot/main.py"]
+
+Now, we can build the image with the following command:
+
+.. code-block:: bash
+
+    docker build . -t vacci-bot
+
+This already led to the first error: ``The command '/bin/sh -c pip3 install pandas' returned a non-zero code: 1``. Fortunately,
+this problem was already `reported <https://github.com/docker-library/python/issues/381>`_. So, I switched my base image to
+
+.. code-block:: docker
+
+    FROM python:slim
+
+Now, the image could be executed from the shell:
+
+.. code-block:: bash
+
+    docker run -it -e CONSUMER_KEY="your key" \
+        -e CONSUMER_SECRET="your secret" \
+        -e ACCESS_TOKEN="your access token" \
+        -e ACCESS_TOKEN_SECRET="your token secret" \
+        vacci-bot
+
+This led to the next surprise while executing: ``locale.Error: unsupported locale setting``. It's called `python:slim`
+for a reason. This can be fixed by adding
+
+.. code-block:: docker
+
+    RUN apt-get update
+    RUN apt-get install -y locales locales-all
+
+to the docker file.
+
+To upload the docker image to the Synology, I have to export (and zip it first):
+
+.. code-block:: bash
+
+    docker image save fav-retweet-bot:latest -o fav-retweet-bot.tar
+    gzip fav-retweet-bot.tar
+
+Now it can be imported to Synology (or any other service like AWS). I timed it to run every 2 hours between 9:00 and
+22:00. It sends me a mail when anything goes wrong. For setting up the task, the following sites were helpful:
+
+- `How to Execute Docker Command with Task Scheduler <https://community.synology.com/enu/forum/1/post/130139>`_
+- `Scheduling a Task on a Synology NAS <https://www.damirscorner.com/blog/posts/20190301-SchedulingATaskOnASynologyNas.html>`_
+
+Conclusion
+==========
+
+Overall it was a nice little project, I invested my day-off in. I would say it was pretty normal: developing the
+"main thing" didn't take long, really (thanks to the "batteries included" concept of Python). It was the little things -
+like the number formatting - that cost time. On the other hand side, that is where we learn, right?
+
+You can find the complete project on `Github <https://github.com/saschakiefer/vacci_bot>`_
+
+If you like, you can follow my little `vacci_bot` on `Twitter <https://twitter.com/GermanyProgress>`_. He would like that.
